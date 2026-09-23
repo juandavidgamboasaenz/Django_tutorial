@@ -537,3 +537,154 @@ urlpatterns = [
     path("<int:question_id>/vote/", views.vote, name="vote"),
 ]
 ```
+
+Take a look in your browser, at “/polls/34/”. It’ll run the ```detail()``` function and display whatever ID you provide in the URL. Try “/polls/34/results/” and “/polls/34/vote/” too – these will display the placeholder results and voting pages.
+
+When somebody requests a page from your website – say, “/polls/34/”, Django will load the ```mysite.urls``` Python module because it’s pointed to by the ```ROOT_URLCONF``` setting. It finds the variable named ```urlpatterns``` and traverses the patterns in order. After finding the match at ```'polls/'```, it strips off the matching text (```"polls/"```) and sends the remaining text – ```"34/"``` – to the ‘polls.urls’ URLconf for further processing. There it matches ```'<int:question_id>/'```, resulting in a call to the detail() view like so:
+
+```python
+detail(request=<HttpRequest object>, question_id=34)
+```
+
+The ```question_id=34``` part comes from ```<int:question_id>```. Using angle brackets “captures” part of the URL and sends it as a keyword argument to the view function. The ```question_id``` part of the string defines the name that will be used to identify the matched pattern, and the ```int``` part is a converter that determines what patterns should match this part of the URL path. The colon (```:```) separates the converter and pattern name.
+
+## Write views that actually do something
+
+Each view is responsible for doing one of two things: returning an ```HttpResponse``` object containing the content for the requested page, or raising an exception such as ```Http404```. The rest is up to you.
+
+Your view can read records from a database, or not. It can use a template system such as Django’s – or a third-party Python template system – or not. It can generate a PDF file, output XML, create a ZIP file on the fly, anything you want, using whatever Python libraries you want.
+
+All Django wants is that ```HttpResponse```. Or an exception.
+
+Because it’s convenient, let’s use Django’s own database API, which we covered in Tutorial 2. Here’s one stab at a new ```index()``` view, which displays the latest 5 poll questions in the system, separated by commas, according to publication date:
+
+```python
+from django.http import HttpResponse
+
+from .models import Question
+
+
+def index(request):
+    latest_question_list = Question.objects.order_by("-pub_date")[:5]
+    output = ", ".join([q.question_text for q in latest_question_list])
+    return HttpResponse(output)
+
+
+# Leave the rest of the views (detail, results, vote) unchanged
+```
+
+There’s a problem here, though: the page’s design is hardcoded in the view. If you want to change the way the page looks, you’ll have to edit this Python code. So let’s use Django’s template system to separate the design from Python by creating a template that the view can use.
+
+First, create a directory called ```templates``` in your ```polls``` directory. Django will look for templates in there.
+
+Your project’s ```TEMPLATES``` setting describes how Django will load and render templates. The default settings file configures a ```DjangoTemplates``` backend whose ```APP_DIRS``` option is set to ```True```. By convention ```DjangoTemplates``` looks for a “templates” subdirectory in each of the ```INSTALLED_APPS```.
+
+Within the ```templates``` directory you have just created, create another directory called ```polls```, and within that create a file called ```index.html```. In other words, your template should be at ```polls/templates/polls/index.html```. Because of how the ```app_directories``` template loader works as described above, you can refer to this template within Django as ```polls/index.html```.
+
+Put the following code in that template in ```polls/templates/polls/index.html```:
+
+```html
+{% if latest_question_list %}
+    <ul>
+    {% for question in latest_question_list %}
+        <li><a href="/polls/{{ question.id }}/">{{ question.question_text }}</a></li>
+    {% endfor %}
+    </ul>
+{% else %}
+    <p>No polls are available.</p>
+{% endif %}
+```
+
+Now let’s update our ```index``` view in ```polls/views.py``` to use the template:
+
+```python
+from django.http import HttpResponse
+from django.template import loader
+
+from .models import Question
+
+
+def index(request):
+    latest_question_list = Question.objects.order_by("-pub_date")[:5]
+    template = loader.get_template("polls/index.html")
+    context = {"latest_question_list": latest_question_list}
+    return HttpResponse(template.render(context, request))
+```
+
+That code loads the template called ```polls/index.html``` and passes it a context. The context is a dictionary mapping template variable names to Python objects.
+
+Load the page by pointing your browser at “/polls/”, and you should see a bulleted-list containing the “What’s up” question from Tutorial 2. The link points to the question’s d
+
+## A shortcut: render()
+
+It’s a very common idiom to load a template, fill a context and return an ```HttpResponse``` object with the result of the rendered template. Django provides a shortcut. Here’s the full ```index()``` view, rewritten:
+
+```python
+from django.shortcuts import render
+
+from .models import Question
+
+
+def index(request):
+    latest_question_list = Question.objects.order_by("-pub_date")[:5]
+    context = {"latest_question_list": latest_question_list}
+    return render(request, "polls/index.html", context)
+```
+
+Note that once we’ve done this in all these views, we no longer need to import ```loader``` and ```HttpResponse``` (you’ll want to keep ```HttpResponse``` if you still have the stub methods for ```detail```, ```results```, and ```vote```).
+
+The ```render()``` function takes the request object as its first argument, a template name as its second argument and a dictionary as its optional third argument. It returns an ```HttpResponse``` object of the given template rendered with the given context.
+
+## Raising a 404 error
+
+Now, let’s tackle the question detail view – the page that displays the question text for a given poll. Here’s the view in ```polls/view.py```:
+
+```python
+from django.http import Http404
+from django.shortcuts import render
+
+from .models import Question
+
+
+# ...
+def detail(request, question_id):
+    try:
+        question = Question.objects.get(pk=question_id)
+    except Question.DoesNotExist:
+        raise Http404("Question does not exist")
+    return render(request, "polls/detail.html", {"question": question})
+```
+
+The new concept here: The view raises the ```Http404``` exception if a question with the requested ID doesn’t exist.
+
+We’ll discuss what you could put in that ```polls/detail.html``` template a bit later, but if you’d like to quickly get the above example working, a file containing just in ```polls/templates/polls/detail.html```:
+
+```html
+{{ question }}
+```
+
+will get you started for now.
+
+## A shortcut: get_object_or_404()
+
+It’s a very common idiom to use ```get()``` and raise ```Http404``` if the object doesn’t exist. Django provides a shortcut. Here’s the ```detail()``` view, rewritten in ```polls/views.py```:
+
+```python
+from django.shortcuts import get_object_or_404, render
+
+from .models import Question
+
+
+# ...
+def detail(request, question_id):
+    question = get_object_or_404(Question, pk=question_id)
+    return render(request, "polls/detail.html", {"question": question})
+```
+
+The ```get_object_or_404()``` function takes a Django model as its first argument and an arbitrary number of keyword arguments, which it passes to the ```get()``` function of the model’s manager. It raises ```Http404``` if the object doesn’t exist.
+
+There’s also a ```get_list_or_404()``` function, which works just as ```get_object_or_404()``` – except using ```filter()``` instead of ```get()```. It raises ```Http404``` if the list is empty.
+
+## Use the template system
+
+Back to the ```detail()``` view for our poll application. Given the context variable ```question```, here’s what the ```polls/detail.html``` template might look like in ```polls/templates/polls/detail.html```:
