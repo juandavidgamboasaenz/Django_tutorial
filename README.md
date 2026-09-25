@@ -688,3 +688,13 @@ There’s also a ```get_list_or_404()``` function, which works just as ```get_ob
 ## Use the template system
 
 Back to the ```detail()``` view for our poll application. Given the context variable ```question```, here’s what the ```polls/detail.html``` template might look like in ```polls/templates/polls/detail.html```:
+
+```html
+<h1>{{ question.question_text }}</h1>
+<ul>
+{% for choice in question.choice_set.all %}
+    <li>{{ choice.choice_text }}</li>
+{% endfor %}
+</ul>
+```
+
