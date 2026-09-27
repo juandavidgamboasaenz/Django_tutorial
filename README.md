@@ -698,3 +698,564 @@ Back to the ```detail()``` view for our poll application. Given the context vari
 </ul>
 ```
 
+The template system uses dot-lookup syntax to access variable attributes. In the example of ```{{ question.question_text }}```, first Django does a dictionary lookup on the object ```question```. Failing that, it tries an attribute lookup – which works, in this case. If attribute lookup had failed, it would’ve tried a list-index lookup.
+
+Method-calling happens in the ```{% for %}``` loop: ```question.choice_set.all``` is interpreted as the Python code ```question.choice_set.all()```, which returns an iterable of ```Choice``` objects and is suitable for use in the ```{% for %}``` tag.
+
+## Removing hardcoded URLs in templates
+
+Remember, when we wrote the link to a question in the ```polls/index.html``` template, the link was partially hardcoded like this:
+
+```html
+<li><a href="/polls/{{ question.id }}/">{{ question.question_text }}</a></li>
+```
+
+The problem with this hardcoded, tightly-coupled approach is that it becomes challenging to change URLs on projects with a lot of templates. However, since you defined the ```name``` argument in the ```path()``` functions in the ```polls.urls``` module, you can remove a reliance on specific URL paths defined in your url configurations by using the ```{% url %}``` template tag:
+
+```html
+<li><a href="{% url 'detail' question.id %}">{{ question.question_text }}</a></li>
+```
+
+The way this works is by looking up the URL definition as specified in the ```polls.urls``` module. You can see exactly where the URL name of ‘detail’ is defined below:
+
+```python
+...
+# the 'name' value as called by the {% url %} template tag
+path("<int:question_id>/", views.detail, name="detail"),
+...
+```
+
+If you want to change the URL of the polls detail view to something else, perhaps to something like ```polls/specifics/12/``` instead of doing it in the template (or templates) you would change it in ```polls/urls.py```:
+
+```python
+...
+# added the word 'specifics'
+path("specifics/<int:question_id>/", views.detail, name="detail"),
+...
+```
+
+## Namespacing URL names
+
+The tutorial project has just one app, ```polls```. In real Django projects, there might be five, ten, twenty apps or more. How does Django differentiate the URL names between them? For example, the ```polls``` app has a ```detail``` view, and so might an app on the same project that is for a blog. How does one make it so that Django knows which app view to create for a url when using the ```{% url %}``` template tag?
+
+The answer is to add namespaces to your URLconf. In the ```polls/urls.py``` file, go ahead and add an ```app_name``` to set the application namespace in ```polls/urls.py```:
+
+```python
+from django.urls import path
+
+from . import views
+
+app_name = "polls"
+urlpatterns = [
+    path("", views.index, name="index"),
+    path("<int:question_id>/", views.detail, name="detail"),
+    path("<int:question_id>/results/", views.results, name="results"),
+    path("<int:question_id>/vote/", views.vote, name="vote"),
+]
+```
+
+Now change your ```polls/index.html``` template from:
+
+```html
+<li><a href="{% url 'detail' question.id %}">{{ question.question_text }}</a></li>
+```
+
+to point at the namespaced detail view:
+
+```html
+<li><a href="{% url 'polls:detail' question.id %}">{{ question.question_text }}</a></li>
+```
+
+## Write a minimal form
+
+Let’s update our poll detail template (“polls/detail.html”) from the last tutorial, so that the template contains an HTML ```<form>``` element in ```polls/templates/polls/detail.html```:
+
+```html
+<form action="{% url 'polls:vote' question.id %}" method="post">
+{% csrf_token %}
+<fieldset>
+    <legend><h1>{{ question.question_text }}</h1></legend>
+    {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
+    {% for choice in question.choice_set.all %}
+        <input type="radio" name="choice" id="choice{{ forloop.counter }}" value="{{ choice.id }}">
+        <label for="choice{{ forloop.counter }}">{{ choice.choice_text }}</label><br>
+    {% endfor %}
+</fieldset>
+<input type="submit" value="Vote">
+</form>
+```
+
+A quick rundown:
+
+- The above template displays a radio button for each question choice. The ```value``` of each radio button is the associated question choice’s ID. The ```name``` of each radio button is ```"choice"```. That means, when somebody selects one of the radio buttons and submits the form, it’ll send the POST data ```choice=#``` where # is the ID of the selected choice. This is the basic concept of HTML forms.
+
+- We set the form’s ```action``` to ```{% url 'polls:vote' question.id %}```, and we set ```method="post"```. Using ```method="post"``` (as opposed to ```method="get"```) is very important, because the act of submitting this form will alter data server-side. Whenever you create a form that alters data server-side, use ```method="post"```. This tip isn’t specific to Django; it’s good web development practice in general.
+
+- ```forloop.counter``` indicates how many times the ```for``` tag has gone through its loop
+
+- Since we’re creating a POST form (which can have the effect of modifying data), we need to worry about Cross Site Request Forgeries. Thankfully, you don’t have to worry too hard, because Django comes with a helpful system for protecting against it. In short, all POST forms that are targeted at internal URLs should use the ```{% csrf_token %}``` template tag.
+
+Now, let’s create a Django view that handles the submitted data and does something with it. Remember, in Tutorial 3, we created a URLconf for the polls application that includes this line in ```polls/urls.py```:
+
+```python
+path("<int:question_id>/vote/", views.vote, name="vote"),
+```
+
+We also created a dummy implementation of the ```vote()``` function. Let’s create a real version. Add the following to ```polls/views.py```:
+
+```python
+from django.db.models import F
+from django.http import HttpResponse, HttpResponseRedirect
+from django.shortcuts import get_object_or_404, render
+from django.urls import reverse
+
+from .models import Choice, Question
+
+
+# ...
+def vote(request, question_id):
+    question = get_object_or_404(Question, pk=question_id)
+    try:
+        selected_choice = question.choice_set.get(pk=request.POST["choice"])
+    except (KeyError, Choice.DoesNotExist):
+        # Redisplay the question voting form.
+        return render(
+            request,
+            "polls/detail.html",
+            {
+                "question": question,
+                "error_message": "You didn't select a choice.",
+            },
+        )
+    else:
+        selected_choice.votes = F("votes") + 1
+        selected_choice.save()
+        # Always return an HttpResponseRedirect after successfully dealing
+        # with POST data. This prevents data from being posted twice if a
+        # user hits the Back button.
+        return HttpResponseRedirect(reverse("polls:results", args=(question.id,)))
+```
+
+This code includes a few things we haven’t covered yet in this tutorial:
+
+- ```request.POST``` is a dictionary-like object that lets you access submitted data by key name. In this case, ```request.POST['choice']``` returns the ID of the selected choice, as a string. ```request.POST``` values are always strings.
+
+- Note that Django also provides ```request.GET``` for accessing GET data in the same way – but we’re explicitly using ```request.POST``` in our code, to ensure that data is only altered via a POST call.
+
+- ```request.POST['choice']``` will raise ```KeyError``` if ```choice``` wasn’t provided in POST data. The above code checks for ```KeyError``` and redisplays the question form with an error message if ```choice``` isn’t given.
+
+- ```F("votes") + 1``` instructs the database to increase the vote count by 1.
+
+- After incrementing the choice count, the code returns an ```HttpResponseRedirect``` rather than a normal ```HttpResponse```. ```HttpResponseRedirect``` takes a single argument: the URL to which the user will be redirected (see the following point for how we construct the URL in this case).
+
+- As the Python comment above points out, you should always return an ```HttpResponseRedirect``` after successfully dealing with POST data. This tip isn’t specific to Django; it’s good web development practice in general.
+
+- We are using the ```reverse()``` function in the ```HttpResponseRedirect``` constructor in this example. This function helps avoid having to hardcode a URL in the view function. It is given the name of the view that we want to pass control to and the variable portion of the URL pattern that points to that view. In this case, using the URLconf we set up in Tutorial 3, this ```reverse()``` call will return a string like
+
+```html
+  "/polls/3/results/"
+```
+
+where the ```3``` is the value of ```question.id```. This redirected URL will then call the ```'results'``` view to display the final page.
+
+As mentioned in Tutorial 3, ```request``` is an ```HttpRequest``` object. For more on ```HttpRequest``` objects, see the request and response documentation.
+
+After somebody votes in a question, the ```vote()``` view redirects to the results page for the question. Let’s write that view in ```polls/views.py```:
+
+```python
+from django.shortcuts import get_object_or_404, render
+
+
+def results(request, question_id):
+    question = get_object_or_404(Question, pk=question_id)
+    return render(request, "polls/results.html", {"question": question})
+```
+This is almost exactly the same as the ```detail()``` view from Tutorial 3. The only difference is the template name. We’ll fix this redundancy later.
+
+Now, create a ```polls/results.html``` template:
+
+```html
+<h1>{{ question.question_text }}</h1>
+
+<ul>
+{% for choice in question.choice_set.all %}
+    <li>{{ choice.choice_text }} -- {{ choice.votes }} vote{{ choice.votes|pluralize }}</li>
+{% endfor %}
+</ul>
+
+<a href="{% url 'polls:detail' question.id %}">Vote again?</a>
+```
+
+Now, go to ```/polls/1/``` in your browser and vote in the question. You should see a results page that gets updated each time you vote. If you submit the form without having chosen a choice, you should see the error message.
+
+## Use generic views: Less code is better
+
+The ```detail()``` (from Tutorial 3) and ```results()``` views are very short – and, as mentioned above, redundant. The ```index()``` view, which displays a list of polls, is similar.
+
+These views represent a common case of basic web development: getting data from the database according to a parameter passed in the URL, loading a template and returning the rendered template. Because this is so common, Django provides a shortcut, called the “generic views” system.
+
+Generic views abstract common patterns to the point where you don’t even need to write Python code to write an app. For example, the ```ListView``` and ```DetailView``` generic views abstract the concepts of “display a list of objects” and “display a detail page for a particular type of object” respectively.
+
+Let’s convert our poll app to use the generic views system, so we can delete a bunch of our own code. We’ll have to take a few steps to make the conversion. We will:
+
+1. Convert the URLconf.
+
+2. Delete some of the old, unneeded views.
+
+3. Introduce new views based on Django’s generic views.
+
+Read on for details.
+
+## Amend URLconf
+
+First, open the ```polls/urls.py``` URLconf and change it like so:
+
+```python
+from django.urls import path
+
+from . import views
+
+app_name = "polls"
+urlpatterns = [
+    path("", views.IndexView.as_view(), name="index"),
+    path("<int:pk>/", views.DetailView.as_view(), name="detail"),
+    path("<int:pk>/results/", views.ResultsView.as_view(), name="results"),
+    path("<int:question_id>/vote/", views.vote, name="vote"),
+]
+```
+
+Note that the name of the matched pattern in the path strings of the second and third patterns has changed from ```<question_id>``` to ```<pk>```. This is necessary because we’ll use the ```DetailView``` generic view to replace our ```detail()``` and ```results()``` views, and it expects the primary key value captured from the URL to be called ```"pk"```.
+
+## Amend views
+
+Next, we’re going to remove our old ```index```, ```detail```, and ```results``` views and use Django’s generic views instead. To do so, open the ```polls/views.py``` file and change it like so:
+
+```python
+from django.db.models import F
+from django.http import HttpResponseRedirect
+from django.shortcuts import get_object_or_404, render
+from django.urls import reverse
+from django.views import generic
+
+from .models import Choice, Question
+
+
+class IndexView(generic.ListView):
+    template_name = "polls/index.html"
+    context_object_name = "latest_question_list"
+
+    def get_queryset(self):
+        """Return the last five published questions."""
+        return Question.objects.order_by("-pub_date")[:5]
+
+
+class DetailView(generic.DetailView):
+    model = Question
+    template_name = "polls/detail.html"
+
+
+class ResultsView(generic.DetailView):
+    model = Question
+    template_name = "polls/results.html"
+
+
+def vote(request, question_id):
+    # same as above, no changes needed.
+    ...
+```
+
+Each generic view needs to know what model it will be acting upon. This is provided using either the ```model``` attribute (in this example, ```model = Question``` for ```DetailView``` and ```ResultsView```) or by defining the ```get_queryset()``` method (as shown in ```IndexView```).
+
+By default, the ```DetailView``` generic view uses a template called ```<app name>/<model name>_detail.html```. In our case, it would use the template ```polls/question_detail.html```. The ```template_name``` attribute is used to tell Django to use a specific template name instead of the autogenerated default template name. We also specify the ```template_name``` for the ```results``` list view – this ensures that the results view and the detail view have a different appearance when rendered, even though they’re both a ```DetailView``` behind the scenes.
+
+Similarly, the ```ListView``` generic view uses a default template called ```<app name>/<model name>_list.html```; we use ```template_name``` to tell ```ListView``` to use our existing ```"polls/index.html"``` template.
+
+In previous parts of the tutorial, the templates have been provided with a context that contains the ```question``` and ```latest_question_list``` context variables. For ```DetailView``` the ```question``` variable is provided automatically – since we’re using a Django model (```Question```), Django is able to determine an appropriate name for the context variable. However, for ListView, the automatically generated context variable is ```question_list```. To override this we provide the ```context_object_name``` attribute, specifying that we want to use ```latest_question_list``` instead. As an alternative approach, you could change your templates to match the new default context variables – but it’s a lot easier to tell Django to use the variable you want.
+
+Run the server, and use your new polling app based on generic views.
+
+For full details on generic views, see the generic views documentation.
+
+When you’re comfortable with forms and generic views, read part 5 of this tutorial to learn about testing our polls app.
+
+## Introducing automated testing
+
+### What are automated tests?
+
+Tests are routines that check the operation of your code.
+
+Testing operates at different levels. Some tests might apply to a tiny detail (does a particular model method return values as expected?) while others examine the overall operation of the software (does a sequence of user inputs on the site produce the desired result?). That’s no different from the kind of testing you did earlier in Tutorial 2, using the ```shell``` to examine the behavior of a method, or running the application and entering data to check how it behaves.
+
+What’s different in automated tests is that the testing work is done for you by the system. You create a set of tests once, and then as you make changes to your app, you can check that your code still works as you originally intended, without having to perform time consuming manual testing.
+
+### Why you need to create tests
+
+So why create tests, and why now?
+
+You may feel that you have quite enough on your plate just learning Python/Django, and having yet another thing to learn and do may seem overwhelming and perhaps unnecessary. After all, our polls application is working quite happily now; going through the trouble of creating automated tests is not going to make it work any better. If creating the polls application is the last bit of Django programming you will ever do, then true, you don’t need to know how to create automated tests. But, if that’s not the case, now is an excellent time to learn.
+
+#### Tests will save you time
+
+Up to a certain point, ‘checking that it seems to work’ will be a satisfactory test. In a more sophisticated application, you might have dozens of complex interactions between components.
+
+A change in any of those components could have unexpected consequences on the application’s behavior. Checking that it still ‘seems to work’ could mean running through your code’s functionality with twenty different variations of your test data to make sure you haven’t broken something - not a good use of your time.
+
+That’s especially true when automated tests could do this for you in seconds. If something’s gone wrong, tests will also assist in identifying the code that’s causing the unexpected behavior.
+
+Sometimes it may seem a chore to tear yourself away from your productive, creative programming work to face the unglamorous and unexciting business of writing tests, particularly when you know your code is working properly.
+
+However, the task of writing tests is a lot more fulfilling than spending hours testing your application manually or trying to identify the cause of a newly-introduced problem.
+
+#### Tests don’t just identify problems, they prevent them
+
+It’s a mistake to think of tests merely as a negative aspect of development.
+
+Without tests, the purpose or intended behavior of an application might be rather opaque. Even when it’s your own code, you will sometimes find yourself poking around in it trying to find out what exactly it’s doing.
+
+Tests change that; they light up your code from the inside, and when something goes wrong, they focus light on the part that has gone wrong - even if you hadn’t even realized it had gone wrong.
+
+#### Tests make your code more attractive
+
+You might have created a brilliant piece of software, but you will find that many other developers will refuse to look at it because it lacks tests; without tests, they won’t trust it. Jacob Kaplan-Moss, one of Django’s original developers, says “Code without tests is broken by design.”
+
+That other developers want to see tests in your software before they take it seriously is yet another reason for you to start writing tests.
+
+#### Tests help teams work together
+
+The previous points are written from the point of view of a single developer maintaining an application. Complex applications will be maintained by teams. Tests guarantee that colleagues don’t inadvertently break your code (and that you don’t break theirs without knowing). If you want to make a living as a Django programmer, you must be good at writing tests!
+
+## Basic testing strategies
+
+There are many ways to approach writing tests.
+
+Some programmers follow a discipline called “test-driven development”; they actually write their tests before they write their code. This might seem counterintuitive, but in fact it’s similar to what most people will often do anyway: they describe a problem, then create some code to solve it. Test-driven development formalizes the problem in a Python test case.
+
+More often, a newcomer to testing will create some code and later decide that it should have some tests. Perhaps it would have been better to write some tests earlier, but it’s never too late to get started.
+
+Sometimes it’s difficult to figure out where to get started with writing tests. If you have written several thousand lines of Python, choosing something to test might not be easy. In such a case, it’s fruitful to write your first test the next time you make a change, either when you add a new feature or fix a bug.
+
+So let’s do that right away.
+
+## Writing our first test
+
+### We identify a bug
+
+Fortunately, there’s a little bug in the ```polls``` application for us to fix right away: the ```Question.was_published_recently()``` method returns ```True``` if the ```Question``` was published within the last day (which is correct) but also if the ```Question```’s ```pub_date``` field is in the future (which certainly isn’t).
+
+Confirm the bug by using the ```shell``` to check the method on a question whose date lies in the future:
+
+```bash
+cd djangotutorial
+python manage.py shell
+```
+
+```python
+>>> import datetime
+>>> from django.utils import timezone
+>>> # create a Question instance with pub_date 30 days in the future
+>>> future_question = Question(pub_date=timezone.now() + datetime.timedelta(days=30))
+>>> # was it published recently?
+>>> future_question.was_published_recently()
+True
+```
+
+Since things in the future are not ‘recent’, this is clearly wrong.
+
+### Create a test to expose the bug
+
+What we’ve just done in the ```shell``` to test for the problem is exactly what we can do in an automated test, so let’s turn that into an automated test.
+
+A conventional place for an application’s tests is in the application’s ```tests.py``` file; the testing system will automatically find tests in any file whose name begins with test.
+
+Put the following in the ```tests.py``` file in the ```polls``` application in ```polls/tests.py```:
+
+```python
+import datetime
+
+from django.test import TestCase
+from django.utils import timezone
+
+from .models import Question
+
+
+class QuestionModelTests(TestCase):
+    def test_was_published_recently_with_future_question(self):
+        """
+        was_published_recently() returns False for questions whose pub_date
+        is in the future.
+        """
+        time = timezone.now() + datetime.timedelta(days=30)
+        future_question = Question(pub_date=time)
+        self.assertIs(future_question.was_published_recently(), False)
+```
+
+Here we have created a ```django.test.TestCase``` subclass with a method that creates a ```Question``` instance with a ```pub_date``` in the future. We then check the output of ```was_published_recently()``` - which ought to be False.
+
+### Running tests
+
+In the terminal, we can run our test:
+
+```bash
+cd djangotutorial
+python manage.py test polls
+```
+
+What happened is this:
+
+- ```manage.py test polls``` looked for tests in the ```polls``` application
+
+- it found a subclass of the ```django.test.TestCase``` class
+
+- it created a special database for the purpose of testing
+
+- it looked for test methods - ones whose names begin with ```test```
+
+- in ```test_was_published_recently_with_future_question``` it created a ```Question``` instance whose ```pub_date``` field is 30 days in the future
+
+- … and using the ```assertIs()``` method, it discovered that its ```was_published_recently()``` returns ```True```, though we wanted it to return ```False```
+
+The test informs us which test failed and even the line on which the failure occurred.
+
+### Fixing the bug
+
+We already know what the problem is:
+```Question.was_published_recently()``` should return ```False``` if its ```pub_date``` is in the future. Amend the method in ```models.py```, so that it will only return ```True``` if the date is also in the past in ```polls/models.py```:
+
+```python
+def was_published_recently(self):
+    now = timezone.now()
+    return now - datetime.timedelta(days=1) <= self.pub_date <= now
+```
+
+and run the test again:
+
+```terminaloutput
+Creating test database for alias 'default'...
+System check identified no issues (0 silenced).
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+OK
+Destroying test database for alias 'default'...
+```
+
+After identifying a bug, we wrote a test that exposes it and corrected the bug in the code so our test passes.
+
+Many other things might go wrong with our application in the future, but we can be sure that we won’t inadvertently reintroduce this bug, because running the test will warn us immediately. We can consider this little portion of the application pinned down safely forever.
+
+### More comprehensive tests
+
+While we’re here, we can further pin down the ```was_published_recently()``` method; in fact, it would be positively embarrassing if in fixing one bug we had introduced another.
+
+Add two more test methods to the same class, to test the behavior of the method more comprehensively in ```polls/test.py```:
+
+```python
+def test_was_published_recently_with_old_question(self):
+    """
+    was_published_recently() returns False for questions whose pub_date
+    is older than 1 day.
+    """
+    time = timezone.now() - datetime.timedelta(days=1, seconds=1)
+    old_question = Question(pub_date=time)
+    self.assertIs(old_question.was_published_recently(), False)
+
+
+def test_was_published_recently_with_recent_question(self):
+    """
+    was_published_recently() returns True for questions whose pub_date
+    is within the last day.
+    """
+    time = timezone.now() - datetime.timedelta(hours=23, minutes=59, seconds=59)
+    recent_question = Question(pub_date=time)
+    self.assertIs(recent_question.was_published_recently(), True)
+```
+
+And now we have three tests that confirm that ```Question.was_published_recently()``` returns sensible values for past, recent, and future questions.
+
+Again, ```polls``` is a minimal application, but however complex it grows in the future and whatever other code it interacts with, we now have some guarantee that the method we have written tests for will behave in expected ways.
+
+## Test a view
+
+The polls application is fairly undiscriminating: it will publish any question, including ones whose ```pub_date``` field lies in the future. We should improve this. Setting a ```pub_date``` in the future should mean that the Question is published at that moment, but invisible until then.
+
+### A test for a view
+
+When we fixed the bug above, we wrote the test first and then the code to fix it. In fact that was an example of test-driven development, but it doesn’t really matter in which order we do the work.
+
+In our first test, we focused closely on the internal behavior of the code. For this test, we want to check its behavior as it would be experienced by a user through a web browser.
+
+Before we try to fix anything, let’s have a look at the tools at our disposal.
+
+### The Django test client
+
+Django provides a test ```Client``` to simulate a user interacting with the code at the view level. We can use it in ```tests.py``` or even in the ```shell```.
+
+We will start again with the ```shell```, where we need to do a couple of things that won’t be necessary in ```tests.py```. The first is to set up the test environment in the ```shell```:
+
+```bash
+cd djangotutorial
+python manage.py shell
+```
+
+```python
+>>> from django.test.utils import setup_test_environment
+>>> setup_test_environment()
+```
+
+```setup_test_environment()``` installs a template renderer which will allow us to examine some additional attributes on responses such as ```response.context``` that otherwise wouldn’t be available. Note that this method does not set up a test database, so the following will be run against the existing database and the output may differ slightly depending on what questions you already created. You might get unexpected results if your ```TIME_ZONE``` in ```settings.py``` isn’t correct. If you don’t remember setting it earlier, check it before continuing.
+
+Next we need to import the test client class (later in ```tests.py``` we will use the ```django.test.TestCase``` class, which comes with its own client, so this won’t be required):
+
+```python
+>>> from django.test import Client
+>>> # create an instance of the client for our use
+>>> client = Client()
+```
+
+With that ready, we can ask the client to do some work for us:
+
+```python
+>>> # get a response from '/'
+>>> response = client.get("/")
+Not Found: /
+>>> # we should expect a 404 from that address; if you instead see an
+>>> # "Invalid HTTP_HOST header" error and a 400 response, you probably
+>>> # omitted the setup_test_environment() call described earlier.
+>>> response.status_code
+404
+>>> # on the other hand we should expect to find something at '/polls/'
+>>> # we'll use 'reverse()' rather than a hardcoded URL
+>>> from django.urls import reverse
+>>> response = client.get(reverse("polls:index"))
+>>> response.status_code
+200
+>>> response.content
+b'\n    <ul>\n    \n        <li><a href="/polls/1/">What&#x27;s up?</a></li>\n    \n    </ul>\n\n'
+>>> response.context["latest_question_list"]
+<QuerySet [<Question: What's up?>]>
+```
+
+### Improving our view
+
+The list of polls shows polls that aren’t published yet (i.e. those that have a ```pub_date``` in the future). Let’s fix that.
+
+In Tutorial 4 we introduced a class-based view, based on ```ListView``` in ```polls/views.py```:
+
+```python
+class IndexView(generic.ListView):
+    template_name = "polls/index.html"
+    context_object_name = "latest_question_list"
+
+    def get_queryset(self):
+        """Return the last five published questions."""
+        return Question.objects.order_by("-pub_date")[:5]
+```
+
+We need to amend the ```get_queryset()``` method and change it so that it also checks the date by comparing it with ```timezone.now()```. First we need to add an import in ```polls/views.py```:
+
+```python
+from django.utils import timezone
+```
+
+and then we must amend the get_queryset method like so:
