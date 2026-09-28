@@ -1259,3 +1259,152 @@ from django.utils import timezone
 ```
 
 and then we must amend the get_queryset method like so:
+
+```python
+def create_question(question_text, days):
+    """
+    Create a question with the given `question_text` and published the
+    given number of `days` offset to now (negative for questions published
+    in the past, positive for questions that have yet to be published).
+    """
+    time = timezone.now() + datetime.timedelta(days=days)
+    return Question.objects.create(question_text=question_text, pub_date=time)
+
+
+class QuestionIndexViewTests(TestCase):
+    def test_no_questions(self):
+        """
+        If no questions exist, an appropriate message is displayed.
+        """
+        response = self.client.get(reverse("polls:index"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No polls are available.")
+        self.assertQuerySetEqual(response.context["latest_question_list"], [])
+
+    def test_past_question(self):
+        """
+        Questions with a pub_date in the past are displayed on the
+        index page.
+        """
+        question = create_question(question_text="Past question.", days=-30)
+        response = self.client.get(reverse("polls:index"))
+        self.assertQuerySetEqual(
+            response.context["latest_question_list"],
+            [question],
+        )
+
+    def test_future_question(self):
+        """
+        Questions with a pub_date in the future aren't displayed on
+        the index page.
+        """
+        create_question(question_text="Future question.", days=30)
+        response = self.client.get(reverse("polls:index"))
+        self.assertContains(response, "No polls are available.")
+        self.assertQuerySetEqual(response.context["latest_question_list"], [])
+
+    def test_future_question_and_past_question(self):
+        """
+        Even if both past and future questions exist, only past questions
+        are displayed.
+        """
+        question = create_question(question_text="Past question.", days=-30)
+        create_question(question_text="Future question.", days=30)
+        response = self.client.get(reverse("polls:index"))
+        self.assertQuerySetEqual(
+            response.context["latest_question_list"],
+            [question],
+        )
+
+    def test_two_past_questions(self):
+        """
+        The questions index page may display multiple questions.
+        """
+        question1 = create_question(question_text="Past question 1.", days=-30)
+        question2 = create_question(question_text="Past question 2.", days=-5)
+        response = self.client.get(reverse("polls:index"))
+        self.assertQuerySetEqual(
+            response.context["latest_question_list"],
+            [question2, question1],
+        )
+```
+
+Let’s look at some of these more closely.
+
+First is a question shortcut function, ```create_question```, to take some repetition out of the process of creating questions.
+
+```test_no_questions``` doesn’t create any questions, but checks the message: “No polls are available.” and verifies the ```latest_question_list``` is empty. Note that the ```django.test.TestCase``` class provides some additional assertion methods. In these examples, we use ```assertContains()``` and ```assertQuerySetEqual()```.
+
+In ```test_past_question```, we create a question and verify that it appears in the list.
+
+In ```test_future_question```, we create a question with a ```pub_date``` in the future. The database is reset for each test method, so the first question is no longer there, and so again the index shouldn’t have any questions in it.
+
+And so on. In effect, we are using the tests to tell a story of admin input and user experience on the site, and checking that at every state and for every new change in the state of the system, the expected results are published.
+
+### Testing the DetailView
+
+What we have works well; however, even though future questions don’t appear in the index, users can still reach them if they know or guess the right URL. So we need to add a similar constraint to ```DetailView``` in ```polls/views.py```:
+
+```python
+class DetailView(generic.DetailView):
+    ...
+
+    def get_queryset(self):
+        """
+        Excludes any questions that aren't published yet.
+        """
+        return Question.objects.filter(pub_date__lte=timezone.now())
+```
+
+We should then add some tests, to check that a ```Question``` whose ```pub_date``` is in the past can be displayed, and that one with a ```pub_date``` in the future is not in ```polls/tests.py```:
+
+```python
+class QuestionDetailViewTests(TestCase):
+    def test_future_question(self):
+        """
+        The detail view of a question with a pub_date in the future
+        returns a 404 not found.
+        """
+        future_question = create_question(question_text="Future question.", days=5)
+        url = reverse("polls:detail", args=(future_question.id,))
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
+
+    def test_past_question(self):
+        """
+        The detail view of a question with a pub_date in the past
+        displays the question's text.
+        """
+        past_question = create_question(question_text="Past Question.", days=-5)
+        url = reverse("polls:detail", args=(past_question.id,))
+        response = self.client.get(url)
+        self.assertContains(response, past_question.question_text)
+```
+
+### Ideas for more tests
+
+We ought to add a similar ```get_queryset``` method to ```ResultsView``` and create a new test class for that view. It’ll be very similar to what we have just created; in fact there will be a lot of repetition.
+
+We could also improve our application in other ways, adding tests along the way. For example, it’s pointless that a ```Question``` with no related ```Choice``` can be published on the site. So, our views could check for this, and exclude such ```Question``` objects. Our tests would create a ```Question``` without a ```Choice```, and then test that it’s not published, as well as create a similar ```Question``` *with* at least one ```Choice```, and test that it *is* published.
+
+Perhaps logged-in admin users should be allowed to see unpublished ```Question``` entries, but not ordinary visitors. Again: whatever needs to be added to the software to accomplish this should be accompanied by a test, whether you write the test first and then make the code pass the test, or work out the logic in your code first and then write a test to prove it.
+
+At a certain point you are bound to look at your tests and wonder whether your code is suffering from test bloat, which brings us to:
+
+## When testing, more is better
+
+It might seem that our tests are growing out of control. At this rate there will soon be more code in our tests than in our application, and the repetition is unaesthetic, compared to the elegant conciseness of the rest of our code.
+
+```It doesn’t matter```. Let them grow. For the most part, you can write a test once and then forget about it. It will continue performing its useful function as you continue to develop your program.
+
+Sometimes tests will need to be updated. Suppose that we amend our views so that only ```Question``` entries with associated ```Choice``` instances are published. In that case, many of our existing tests will fail - *telling us exactly which tests need to be amended to bring them up to date*, so to that extent tests help look after themselves.
+
+At worst, as you continue developing, you might find that you have some tests that are now redundant. Even that’s not a problem; in testing redundancy is a good thing.
+
+As long as your tests are sensibly arranged, they won’t become unmanageable. Good rules-of-thumb include having:
+
+- a separate ```TestClass``` for each model or view
+
+- a separate test method for each set of conditions you want to test
+
+- test method names that describe their function
